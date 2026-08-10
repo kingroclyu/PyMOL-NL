@@ -51,28 +51,38 @@ nl list          # 全部规则列表
 
 ## 支持的命令
 
+> 插件默认**免前缀模式**：直接输入自然语言即可，`nl` 前缀也可用。
+
 | 类别 | 示例 |
 |---|---|
-| 选择 | `nl 选择74号` / `nl 选择氨基酸74号` / `nl 选择A链74号` / `nl 选择74到150` / `nl 选择A链` / `nl 选择74号附近5埃` / `nl 全选` / `nl 清空选择` |
-| 显示 | `nl 显示stick` / `nl 显示卡通` / `nl 显示表面` / `nl 隐藏卡通` / `nl 只显示卡通` |
-| 着色 | `nl 染成红色` / `nl 标红` / `nl 把74号染成蓝色` |
-| 测距 | `nl 量74和150的距离` / `nl 量A链74和B链150的距离` / `nl 清除距离` |
-| 视角 | `nl 放大` / `nl 放大74号` / `nl 重置视角` |
-| 对齐 | `nl 对齐b到a` / `nl 以a为基准对齐b` |
+| 选择 | `选择74号` / `选择A链74号` / `选择74到150` / `选择A链` / `选择74号附近5埃` / `全选` / `清空选择` |
+| 多选/追加 | `选择a链71和74号和b链10号` / `添加选择b链的14，c链的10` / `选择A链11、14和15号` |
+| 显示 | `显示stick` / `显示卡通` / `显示表面` / `隐藏卡通` / `只显示卡通` |
+| 着色 | `染成红色`（按元素） / `把74号染成蓝色` / `三条链显示不同的颜色` |
+| 测距 | `量74和150的距离` / `量A链74和B链150的距离` / `清除距离` |
+| 视角 | `放大` / `放大74号` / `重置视角` |
+| 对齐 | `对齐b到a` / `以a为基准对齐b` |
+| 对象操作 | `将b链和c链分别拆分出来` / `删除prot中的b链和c链` / `将m复制为m2` / `删除对象m2` / `旋转90度` / `保存当前状态为state.pse` |
+| 多步命令 | `将prot中的链和c链拆分出来，然后分别染成不同的颜色` |
 
 ## 设计
 
 ```
-PyMOL 命令行:  nl 选择氨基酸74号
-        ↓ cmd.extend("nl", ...) 注册的命令
-   parse(text) —— 规则表按序匹配（正则 + 意图函数）
-        ↓
-   返回 PyMOL 命令列表 → cmd.do() 逐条执行
+输入自然语言
+  ↓
+① 规则引擎（38 条正则规则）—— 命中 → 直接执行（秒回）
+  ↓ 未命中
+② DeepSeek 意图识别 —— 只输出 JSON（intent + params），不生成命令
+  ↓
+③ 白名单执行器 —— intent → 安全命令模板 + 参数校验
+  ↓
+④ cmd.do() 执行（sel 自动补全 + 免前缀拦截）
 ```
 
 - 规则表在 `pymol_nl.py` 顶部，`@rule(正则, 说明)` 装饰器注册，**先注册先匹配**
 - 匹配失败会提示"无法理解"并给出 `nl help` 指引
 - 所有命令输出带 `>>>` 前缀回显，方便核对翻译是否正确
+- 命令依赖 `sel` 选择集时自动补全（`select sel, all`），无需手动先选
 
 ## 文件结构
 
@@ -88,15 +98,16 @@ PyMOL-NL/
 
 规则表覆盖常用命令；**规则未命中时自动调用 DeepSeek 识别意图**，把没写过的说法也翻译成安全命令。
 
-**支持意图**（15 种）：select / add_selection / show / hide / color / distance / zoom / orient / align / create_object / split_chains / save_state / measure_angle / rotate / delete_object
+**支持意图**（17 种）：select / add_selection / show / hide / color / color_chains / distance / zoom / orient / align / create_object / split_chains / save_state / measure_angle / rotate / delete_object / remove_chains
 
 示例（规则表没有的说法）：
 ```
 将sel复制另存为trem2      → create trem2, sel
-将b链和c链分别拆分出来    → create chainB, chain B; create chainC, chain C
+将b链和c链分别拆分出来    → extract chainB, chain B; extract chainC, chain C
 再添加选择b链的14，c链的10 → select sel, sel or (...)
 旋转90度                  → rotate y, 90, sel
 保存当前状态为state.pse   → save state.pse
+三条链显示不同的颜色      → color red/green/blue 分别染 A/B/C 链
 ```
 
 **架构**（安全设计）：
