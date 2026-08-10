@@ -14,11 +14,10 @@ PyMOL-NL: 自然语言驱动 PyMOL（中英文）
     nl help
 
 安装:
-    1. 将本文件复制到 C:\\Users\\<用户名>\\.pymol\\startup\\ 目录
-       （若目录不存在则创建）
+    1. 将本文件复制到 ~/.pymol/startup/ 目录（若目录不存在则创建）
     2. 重启 PyMOL，命令行输入:  nl help 查看所有可用命令
     3. 若无 startup 目录，也可在 PyMOL 命令行手动加载:
-       run D:/ScienceSoft/AI_Tools/PyMOL-NL/pymol_nl.py
+       run /path/to/pymol_nl.py
 
 作者: 2026-08-10
 兼容: PyMOL 2.x（内置 Python 3）

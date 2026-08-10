@@ -6,23 +6,31 @@
 
 ### 1. 安装（二选一）
 
-**方式 A：startup 目录（推荐，启动自动加载）**
+**方式 A：startup 目录（PyMOL 2.x，启动自动加载）**
 
 ```powershell
-# 在 PowerShell / CMD 中：
-mkdir C:\Users\Lv_JP\.pymol\startup
-copy D:\ScienceSoft\AI_Tools\PyMOL-NL\pymol_nl.py C:\Users\Lv_JP\.pymol\startup\
+# 在 PowerShell / CMD 中（<USER> 替换为你的用户名）：
+mkdir C:\Users\<USER>\.pymol\startup
+copy <path>\pymol_nl.py C:\Users\<USER>\.pymol\startup\
 ```
 
 重启 PyMOL，看到提示 `PyMOL-NL 已加载` 即成功。
 
-**方式 B：手动加载（不重启）**
+**方式 B：手动加载（不重启，所有版本通用）**
 
 打开 PyMOL 后，命令行执行：
 
 ```
-run D:/ScienceSoft/AI_Tools/PyMOL-NL/pymol_nl.py
+run <path>/pymol_nl.py
 ```
+
+> **PyMOL 3.x 用户注意**：3.x 不再自动加载 `~/.pymol/startup/` 目录，改为启动时执行 `.pymolrc` 文件。请在用户主目录创建 `C:\Users\<USER>\.pymolrc`（纯 ASCII，无后缀），内容为：
+>
+> ```
+> run <path>/pymol_nl.py
+> ```
+>
+> 然后在 PyMOL 中执行 `run <path>/pymol_nl.py` 即可启用（免重启）。
 
 ### 2. 使用
 

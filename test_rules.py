@@ -3,7 +3,7 @@
 import sys, importlib.util
 
 # 加载 pymol_nl.py 但阻止 _register() 报错
-spec = importlib.util.spec_from_file_location("pymol_nl", "/mnt/d/ScienceSoft/AI_Tools/PyMOL-NL/pymol_nl.py")
+spec = importlib.util.spec_from_file_location("pymol_nl", "/path/to/pymol_nl.py")
 pml = importlib.util.module_from_spec(spec)
 sys.modules["pymol_nl"] = pml
 spec.loader.exec_module(pml)
