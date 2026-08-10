@@ -84,7 +84,7 @@ def _sel_add_multi_chain(m):
     return [f"select sel, sel or ({' or '.join(terms)})"]
 
 
-@rule(r"添加选择\s*([ABCabc])\s*链?\s*((?:\d+\s*号?)(?:\s*(?:和|与|、|,|，|\s+)\s*\d+\s*号?)+)$", "添加选择(追加到现有选择): 添加选择a链175、179、182")
+@rule(r"添加选择\s*([ABCabc])\s*链?\s*的?\s*((?:\d+\s*号?)(?:\s*(?:和|与|、|,|，|\s+)\s*\d+\s*号?)+)$", "添加选择(追加到现有选择): 添加选择a链175、179、182")
 def _sel_add_chain_multi(m):
     ch = m.group(1).upper()
     resis = [x for x in re.split(r"\s*(?:和|与|、|,|，|\s+)\s*", m.group(2)) if x.strip()]
@@ -97,7 +97,7 @@ def _sel_add_res(m):
     return [f"select sel, sel or (resi {m.group(1)})"]
 
 
-@rule(r"添加选择\s*([ABCabc])\s*链?\s*(\d+)\s*号?$", "添加选择指定链单残基: 添加选择a链201号")
+@rule(r"添加选择\s*([ABCabc])\s*链?\s*的?\s*(\d+)\s*号?$", "添加选择指定链单残基: 添加选择a链201号")
 def _sel_add_chain_res(m):
     return [f"select sel, sel or (chain {m.group(1).upper()} and resi {m.group(2)})"]
 
@@ -109,7 +109,7 @@ def _sel_add_res_multi(m):
     return [f"select sel, sel or (resi {'+'.join(resis)})"]
 
 
-@rule(r"(?:选择|选中|选)?\s*([ABCabc])\s*链?\s*((?:\d+\s*号?)(?:\s*(?:和|与|、|,|，|\s+)\s*\d+\s*号?)+)$", "选择同链多残基(任意数量): 选择A链11、14和15号")
+@rule(r"(?:选择|选中|选)?\s*([ABCabc])\s*链?\s*的?\s*((?:\d+\s*号?)(?:\s*(?:和|与|、|,|，|\s+)\s*\d+\s*号?)+)$", "选择同链多残基(任意数量): 选择A链11、14和15号")
 def _sel_chain_res_multi(m):
     ch = m.group(1).upper()
     resis = [x for x in re.split(r"\s*(?:和|与|、|,|，|\s+)\s*", m.group(2)) if x.strip()]
@@ -124,12 +124,12 @@ def _sel_res_multi(m):
     return _highlight(f"select sel, resi {'+'.join(resis)}")
 
 
-@rule(r"(?:选择|选中|选)?\s*([ABCabc])\s*链?\s*(\d+)\s*号?$", "选择指定链残基: 选择A链74号")
+@rule(r"(?:选择|选中|选)?\s*([ABCabc])\s*链?\s*的?\s*(\d+)\s*号?$", "选择指定链残基: 选择A链74号")
 def _sel_chain_res(m):
     return _highlight(f"select sel, chain {m.group(1).upper()} and resi {m.group(2)}")
 
 
-@rule(r"(?:选择|选中|选)?\s*((?:[ABCabc]\s*链?\s*\d+\s*号?)(?:\s*(?:和|与|、|,|，)\s*(?:[ABCabc]\s*链?\s*\d+\s*号?|\d+\s*号?))+)", "选择跨链多残基: 选择a链71和74号和b链10号")
+@rule(r"(?:选择|选中|选)?\s*((?:[ABCabc]\s*链?\s*的?\s*\d+\s*号?)(?:\s*(?:和|与|、|,|，)\s*(?:[ABCabc]\s*链?\s*的?\s*\d+\s*号?|\d+\s*号?))+)", "选择跨链多残基: 选择a链71和74号和b链10号")
 def _sel_multi_chain(m):
     text = m.group(1)
     # 按连接词分割: 选择a链71和74号和b链10号 -> [a链71, 74号, b链10号]
@@ -137,7 +137,7 @@ def _sel_multi_chain(m):
     chains = {}  # chain -> [resids]
     cur_chain = None
     for p in parts:
-        mm = re.match(r"\s*([ABCabc])\s*链?\s*(\d+)\s*号?\s*$", p)
+        mm = re.match(r"\s*([ABCabc])\s*链?\s*的?\s*(\d+)\s*号?\s*$", p)
         if mm:
             cur_chain = mm.group(1).upper()
             chains.setdefault(cur_chain, []).append(mm.group(2))
@@ -238,7 +238,7 @@ def _dist(m):
     return [f"distance dist_{m.group(1)}_{m.group(2)}, resi {m.group(1)} and name CA, resi {m.group(2)} and name CA"]
 
 
-@rule(r"(?:量|测|计算)?\s*([ABCabc])\s*链?\s*(\d+)\s*和\s*([ABCabc])\s*链?\s*(\d+)\s*(?:的)?\s*(?:距离|间距)$", "测量跨链残基距离: 量A链74和B链150的距离")
+@rule(r"(?:量|测|计算)?\s*([ABCabc])\s*链?\s*的?\s*(\d+)\s*和\s*([ABCabc])\s*链?\s*(\d+)\s*(?:的)?\s*(?:距离|间距)$", "测量跨链残基距离: 量A链74和B链150的距离")
 def _dist_chain(m):
     return [f"distance dist_{m.group(1)}{m.group(2)}_{m.group(3)}{m.group(4)}, chain {m.group(1).upper()} and resi {m.group(2)} and name CA, chain {m.group(3).upper()} and resi {m.group(4)} and name CA"]
 
