@@ -61,7 +61,7 @@ def _get_api_key():
 INTENT_NAMES = [
     "select", "add_selection", "show", "hide", "color", "distance", "zoom",
     "orient", "align", "create_object", "save_state",
-    "measure_angle", "rotate", "delete_object",
+    "measure_angle", "rotate", "delete_object", "remove_chains",
     "split_chains",
 ]
 
@@ -82,12 +82,30 @@ intent 说明:
 - distance: 测量距离 -> params: {{"selection1": "74", "selection2": "150"}}
 - zoom/orient: 视角 -> params: {{"target": "74"}} 或空
 - align: 对齐 -> params: {{"target": "a", "reference": "b"}}
-- create_object: 复制/另存为命名对象 -> params: {{"source": "sel", "target": "newname"}}
-- split_chains: 把指定链分别拆分为独立对象（多链时拆分, 如"把b链和c链拆分出来"）-> params: {{"chains": "B,C"}} 或 {{"chains": "b和c"}}
+- create_object: **复制**/另存为命名对象（原对象保留）-> params: {{"source": "sel", "target": "newname"}}
+  如"将sel复制另存为trem2" -> {{"source": "sel", "target": "trem2"}}
+- split_chains: **提取**指定链为独立对象（原对象中移除这些链, 是 extract 不是复制）-> params: {{"chains": "B,C"}}
+  如"将b链和c链分别拆分出来" -> {{"chains": "B,C"}}
+  注意: 拆分/提取/拿出来用 split_chains; 复制/另存为用 create_object
+- delete_object: **删除整个对象/选择**（如"删除对象m2"）-> params: {{"target": "objname"}}
+  注意: 若输入是"从某对象中删除某些链/残基"(保留其余部分), 用 remove_chains 而不是 delete_object
+- remove_chains: 从对象中移除指定链（保留其余链）-> params: {{"object": "prot", "chains": "B,C"}}
+  如"删除prot中的b链和c链" -> {{"object": "prot", "chains": "B,C"}}
 - save_state: 保存状态文件 -> params: {{"filename": "state.pse"}}
 - measure_angle: 测量角度 -> params: {{"resi1": "74", "resi2": "150", "resi3": "160"}}
 - rotate: 旋转 -> params: {{"angle": "90", "axis": "y"}}
-- delete_object: 删除对象/选择 -> params: {{"target": "objname"}}
+
+示例（输入 -> 输出）:
+- "将sel复制另存为trem2" -> {{"intent": "create_object", "params": {{"source": "sel", "target": "trem2"}}}}
+- "将b链和c链分别拆分出来" -> {{"intent": "split_chains", "params": {{"chains": "B,C"}}}}
+- "删除prot中的b链和c链" -> {{"intent": "remove_chains", "params": {{"object": "prot", "chains": "B,C"}}}}
+- "删除对象m2" -> {{"intent": "delete_object", "params": {{"target": "m2"}}}}
+- "再添加选择b链的14，c链的10" -> {{"intent": "add_selection", "params": {{"selection": "chain B and resi 14 or chain C and resi 10"}}}}
+- "选择A链74号" -> {{"intent": "select", "params": {{"selection": "chain A and resi 74"}}}}
+- "旋转90度" -> {{"intent": "rotate", "params": {{"angle": "90", "axis": "y"}}}}
+- "保存当前状态为state.pse" -> {{"intent": "save_state", "params": {{"filename": "state.pse"}}}}
+- "量74和150的距离" -> {{"intent": "distance", "params": {{"selection1": "74", "selection2": "150"}}}}
+- "把对象a对齐到b" -> {{"intent": "align", "params": {{"target": "a", "reference": "b"}}}}
 
 输出格式: {{"intent": "...", "params": {{"...": "..."}}}}"""
 
@@ -158,11 +176,22 @@ def intent_to_cmds(intent, params):
             return None
         return [f"color {color}, sel"]
     if intent == "distance":
-        r1 = _safe_resi(str(p.get("selection1", p.get("resi1", ""))))
-        r2 = _safe_resi(str(p.get("selection2", p.get("resi2", ""))))
-        if not r1 or not r2:
+        s1 = str(p.get("selection1", p.get("resi1", ""))).strip()
+        s2 = str(p.get("selection2", p.get("resi2", ""))).strip()
+        if not s1 or not s2:
             return None
-        return [f"distance dist_{r1}_{r2}, resi {r1} and name CA, resi {r2} and name CA"]
+        # 支持两种格式: 纯数字 "74" 或完整选区 "chain A and resi 74"
+        def _dist_sel(s):
+            if re.fullmatch(r"\d+([+\-]\d+)*", s):
+                return f"resi {s} and name CA"
+            if re.fullmatch(r"[A-Za-z0-9\s()+\-_,]+", s):
+                return f"{s} and name CA"
+            return None
+        d1, d2 = _dist_sel(s1), _dist_sel(s2)
+        if not d1 or not d2:
+            return None
+        tag = re.sub(r"[^0-9A-Za-z]", "_", s1)[:20] + "_" + re.sub(r"[^0-9A-Za-z]", "_", s2)[:20]
+        return [f"distance dist_{tag}, {d1}, {d2}"]
     if intent == "zoom":
         target = str(p.get("target", "sel")).strip()
         if target.lower() in ("sel", "all"):
@@ -194,7 +223,8 @@ def intent_to_cmds(intent, params):
         cmds = []
         for ch in sorted(set(chain_list)):
             obj = f"chain{ch}"
-            cmds.append(f"create {obj}, chain {ch}")
+            # extract = 提取（原对象中移除该链），create = 复制（原对象保留）
+            cmds.append(f"extract {obj}, chain {ch}")
         return cmds
     if intent == "save_state":
         fname = _safe_name(p.get("filename", "state.pse"), "state.pse")
@@ -217,6 +247,18 @@ def intent_to_cmds(intent, params):
     if intent == "delete_object":
         name = _safe_name(p.get("target", p.get("object", "")), "obj")
         return [f"delete {name}"]
+    if intent == "remove_chains":
+        obj = _safe_name(p.get("object", p.get("target", "")), "obj")
+        chains_raw = p.get("chains", p.get("chain", ""))
+        if isinstance(chains_raw, list):
+            chain_list = [str(c).strip().upper() for c in chains_raw]
+        else:
+            chain_list = re.split(r"[,，和与、\s]+", str(chains_raw))
+        chain_list = [c.strip().upper() for c in chain_list if c.strip() and c.strip().upper() in "ABC"]
+        if not chain_list:
+            return None
+        sel_expr = " or ".join(f"chain {c}" for c in sorted(set(chain_list)))
+        return [f"remove ({sel_expr}) and {obj}"]
     return None
 
 

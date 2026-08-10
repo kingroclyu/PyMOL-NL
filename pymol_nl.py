@@ -273,6 +273,52 @@ def _align_ref(m):
     return [f"align {mob}, {ref}"]
 
 
+# ---------- 对象操作 ----------
+
+@rule(r"(?:把|将)?\s*([ABCabc])\s*链(?:和|与|、|,|，)\s*([ABCabc])\s*链\s*(?:分别)?\s*(?:拆分|提取|拿出来|分离|分出来)", "拆分链为独立对象(extract): 将b链和c链分别拆分出来")
+def _split_chains2(m):
+    chains = [m.group(1).upper(), m.group(2).upper()]
+    return [f"extract chain{c}, chain {c}" for c in sorted(set(chains))]
+
+
+@rule(r"(?:把|将)?\s*([ABCabc])\s*链\s*(?:拆分|提取|拿出来|分离|分出来)", "拆分单链为独立对象(extract): 把b链拆分出来")
+def _split_chain1(m):
+    c = m.group(1).upper()
+    return [f"extract chain{c}, chain {c}"]
+
+
+@rule(r"(?:删除|移除|去掉)\s*(?:对象|物体)?\s*([A-Za-z0-9_]+)$", "删除对象: 删除对象m2 / 删掉m2")
+def _del_obj(m):
+    return [f"delete {m.group(1)}"]
+
+
+@rule(r"(?:删除|移除|去掉)\s*(?:对象|物体)?\s*([A-Za-z0-9_]+)\s*(?:中|里的?|中的?)\s*([ABCabc])\s*链(?:\s*(?:和|与|、|,|，)\s*([ABCabc])\s*链)?$", "从对象删除链: 删除prot中的b链和c链")
+def _remove_chains(m):
+    obj = m.group(1)
+    chains = [m.group(2).upper()]
+    if m.group(3):
+        chains.append(m.group(3).upper())
+    sel = " or ".join(f"chain {c}" for c in chains)
+    return [f"remove ({sel}) and {obj}"]
+
+
+@rule(r"(?:把|将)?\s*([A-Za-z0-9_]+)\s*(?:复制|另存为|拷贝|copy)\s*(?:为|成|到)?\s*([A-Za-z0-9_]+)$", "复制对象: 将m复制为m2 / 把sel另存为trem2")
+def _copy_obj(m):
+    return [f"create {m.group(2)}, {m.group(1)}"]
+
+
+@rule(r"(?:旋转|转动|转)\s*(-?\d+(?:\.\d+)?)\s*度\s*(?:绕\s*([xyzXYZ])\s*轴)?$", "旋转: 旋转90度 / 绕y轴转90度")
+def _rotate(m):
+    angle = m.group(1)
+    axis = m.group(2).lower() if m.group(2) else "y"
+    return [f"rotate {axis}, {angle}, sel"]
+
+
+@rule(r"(?:保存|存)\s*(?:当前状态|状态|会话)?\s*(?:为|到|至)?\s*([A-Za-z0-9_.\-]+)$", "保存状态: 保存当前状态为state.pse")
+def _save(m):
+    return [f"save {m.group(1)}"]
+
+
 # ---------- 其他 ----------
 
 @rule(r"^(?:help|帮助|说明)$", "显示帮助")
