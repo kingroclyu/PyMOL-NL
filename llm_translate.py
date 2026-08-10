@@ -59,7 +59,7 @@ def _get_api_key():
 # ============================================================
 
 INTENT_NAMES = [
-    "select", "add_selection", "show", "hide", "color", "distance", "zoom",
+    "select", "add_selection", "show", "hide", "color", "color_chains", "distance", "zoom",
     "orient", "align", "create_object", "save_state",
     "measure_angle", "rotate", "delete_object", "remove_chains",
     "split_chains",
@@ -79,13 +79,17 @@ intent 说明:
   注意: 输入含"添加/追加/再加/多选"等词时用 add_selection 而不是 select
 - show/hide: 显示/隐藏表示方式 -> params: {{"representation": "sticks|cartoon|surface|spheres|lines"}}
 - color: 着色 -> params: {{"color": "red"}}
+- color_chains: 给多条链分别染不同颜色（如"三条链显示不同颜色"/"A链红色B链绿色"）-> params: {{"chains": {{"A": "red", "B": "green", "C": "blue"}}}}
+  注意: 输入含"不同颜色/分别着色/每链一个颜色"等多链分色意图时用 color_chains 而不是 color
 - distance: 测量距离 -> params: {{"selection1": "74", "selection2": "150"}}
 - zoom/orient: 视角 -> params: {{"target": "74"}} 或空
 - align: 对齐 -> params: {{"target": "a", "reference": "b"}}
 - create_object: **复制**/另存为命名对象（原对象保留）-> params: {{"source": "sel", "target": "newname"}}
   如"将sel复制另存为trem2" -> {{"source": "sel", "target": "trem2"}}
-- split_chains: **提取**指定链为独立对象（原对象中移除这些链, 是 extract 不是复制）-> params: {{"chains": "B,C"}}
+- split_chains: **提取**指定链为独立对象（原对象中移除这些链, 是 extract 不是复制）-> params: {{"chains": "B,C", "object": "可选对象名"}}
   如"将b链和c链分别拆分出来" -> {{"chains": "B,C"}}
+  如"将prot中的b链和c链拆分出来" -> {{"chains": "B,C", "object": "prot"}}
+  如"将prot中的链和c链拆分出来"（第一条链省略字母, 通常是b链）-> {{"chains": "B,C", "object": "prot"}}
   注意: 拆分/提取/拿出来用 split_chains; 复制/另存为用 create_object
 - delete_object: **删除整个对象/选择**（如"删除对象m2"）-> params: {{"target": "objname"}}
   注意: 若输入是"从某对象中删除某些链/残基"(保留其余部分), 用 remove_chains 而不是 delete_object
@@ -106,6 +110,7 @@ intent 说明:
 - "保存当前状态为state.pse" -> {{"intent": "save_state", "params": {{"filename": "state.pse"}}}}
 - "量74和150的距离" -> {{"intent": "distance", "params": {{"selection1": "74", "selection2": "150"}}}}
 - "把对象a对齐到b" -> {{"intent": "align", "params": {{"target": "a", "reference": "b"}}}}
+- "三条链显示不同的颜色" -> {{"intent": "color_chains", "params": {{"chains": {{"A": "red", "B": "green", "C": "blue"}}}}}}
 
 输出格式: {{"intent": "...", "params": {{"...": "..."}}}}"""
 
@@ -174,7 +179,25 @@ def intent_to_cmds(intent, params):
         color = str(p.get("color", "red")).lower()
         if not re.fullmatch(r"[a-z_0-9]+", color):
             return None
-        return [f"color {color}, sel"]
+        # 默认按 element 染色（PyMOL Color by Element 语义）:
+        # 非碳原子用元素默认色(atomic), 碳原子用指定色
+        return [f"color atomic, (sel and not elem C)", f"color {color}, (elem C and sel)"]
+    if intent == "color_chains":
+        chains_map = p.get("chains", {})
+        if not isinstance(chains_map, dict) or not chains_map:
+            return None
+        cmds = []
+        for ch, color in chains_map.items():
+            ch = str(ch).strip().upper()
+            color = str(color).strip().lower()
+            if ch not in "ABC":
+                continue
+            if not re.fullmatch(r"[a-z_0-9]+", color):
+                continue
+            # 按 element 染色: 非碳原子元素默认色 + 碳原子指定色
+            cmds.append(f"color atomic, (chain {ch} and not elem C)")
+            cmds.append(f"color {color}, (chain {ch} and elem C)")
+        return cmds if cmds else None
     if intent == "distance":
         s1 = str(p.get("selection1", p.get("resi1", ""))).strip()
         s2 = str(p.get("selection2", p.get("resi2", ""))).strip()
@@ -220,11 +243,18 @@ def intent_to_cmds(intent, params):
         chain_list = [c.strip().upper() for c in chain_list if c.strip() and c.strip().upper() in "ABC"]
         if not chain_list:
             return None
+        # 可选: 限定从哪个对象拆分（LLM 提取到 object 参数时）
+        obj = p.get("object", p.get("obj", ""))
         cmds = []
         for ch in sorted(set(chain_list)):
-            obj = f"chain{ch}"
+            objname = f"chain{ch}"
             # extract = 提取（原对象中移除该链），create = 复制（原对象保留）
-            cmds.append(f"extract {obj}, chain {ch}")
+            if obj:
+                cmds.append(f"extract {objname}, {obj} and chain {ch}")
+            else:
+                cmds.append(f"extract {objname}, chain {ch}")
+            # extract 新对象不继承原表示方式, 显式显示卡通(蛋白序列可见)
+            cmds.append(f"show cartoon, {objname}")
         return cmds
     if intent == "save_state":
         fname = _safe_name(p.get("filename", "state.pse"), "state.pse")

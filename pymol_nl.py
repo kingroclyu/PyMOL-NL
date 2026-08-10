@@ -213,16 +213,22 @@ _COLORS = {
 }
 
 
-@rule(r"(?:染成|标成|改成|变成|设为|染|标|变)?\s*(红|蓝|绿|黄|橙|紫|青|白|灰|黑|粉|棕)\s*色?$", "着色: 染成红色 / 标红")
+def _color_cmds(c, sel="sel"):
+    """按 element 染色（PyMOL Color by Element 语义）:
+    非碳原子用元素默认色(atomic), 碳原子用指定色。"""
+    return [f"color atomic, ({sel} and not elem C)", f"color {c}, ({sel} and elem C)"]
+
+
+@rule(r"(?:染成|标成|改成|变成|设为|染|标|变)?\s*(红|蓝|绿|黄|橙|紫|青|白|灰|黑|粉|棕)\s*色?$", "着色(按元素): 染成红色 / 标红")
 def _color(m):
     c = _COLORS[m.group(1)]
-    return [f"color {c}, sel"]
+    return _color_cmds(c, "sel")
 
 
-@rule(r"(?:把)?\s*(\d+)\s*号?\s*(?:染成|标成|变成)?\s*(红|蓝|绿|黄|橙|紫|青|白|灰|黑|粉|棕)\s*色?$", "指定残基着色: 把74号染成红色")
+@rule(r"(?:把)?\s*(\d+)\s*号?\s*(?:染成|标成|变成)?\s*(红|蓝|绿|黄|橙|紫|青|白|灰|黑|粉|棕)\s*色?$", "指定残基着色(按元素): 把74号染成红色")
 def _color_res(m):
     c = _COLORS[m.group(2)]
-    return [f"select sel, resi {m.group(1)}", f"color {c}, sel"]
+    return [f"select sel, resi {m.group(1)}"] + _color_cmds(c, "sel")
 
 
 # ---------- 测距 ----------
@@ -275,16 +281,32 @@ def _align_ref(m):
 
 # ---------- 对象操作 ----------
 
+@rule(r"(?:把|将)?\s*([A-Za-z0-9_]+)\s*(?:中|里的?|中的?)\s*([ABCabc])\s*链(?:\s*(?:和|与|、|,|，)\s*([ABCabc])\s*链)?\s*(?:分别)?\s*(?:拆分|提取|拿出来|分离|分出来)", "从对象拆分链(extract, 链名明确): 将prot中的b链和c链拆分出来")
+def _split_from_obj(m):
+    obj = m.group(1)
+    chains = [m.group(2).upper()]
+    if m.group(3):
+        chains.append(m.group(3).upper())
+    cmds = []
+    for c in sorted(set(chains)):
+        cmds.append(f"extract chain{c}, {obj} and chain {c}")
+        cmds.append(f"show cartoon, chain{c}")  # extract 不继承表示方式
+    return cmds
+
 @rule(r"(?:把|将)?\s*([ABCabc])\s*链(?:和|与|、|,|，)\s*([ABCabc])\s*链\s*(?:分别)?\s*(?:拆分|提取|拿出来|分离|分出来)", "拆分链为独立对象(extract): 将b链和c链分别拆分出来")
 def _split_chains2(m):
     chains = [m.group(1).upper(), m.group(2).upper()]
-    return [f"extract chain{c}, chain {c}" for c in sorted(set(chains))]
+    cmds = []
+    for c in sorted(set(chains)):
+        cmds.append(f"extract chain{c}, chain {c}")
+        cmds.append(f"show cartoon, chain{c}")  # extract 不继承表示方式
+    return cmds
 
 
 @rule(r"(?:把|将)?\s*([ABCabc])\s*链\s*(?:拆分|提取|拿出来|分离|分出来)", "拆分单链为独立对象(extract): 把b链拆分出来")
 def _split_chain1(m):
     c = m.group(1).upper()
-    return [f"extract chain{c}, chain {c}"]
+    return [f"extract chain{c}, chain {c}", f"show cartoon, chain{c}"]
 
 
 @rule(r"(?:删除|移除|去掉)\s*(?:对象|物体)?\s*([A-Za-z0-9_]+)$", "删除对象: 删除对象m2 / 删掉m2")
@@ -348,7 +370,28 @@ def _mode_map(s):
 
 
 def _parse_line(line):
-    """解析一行命令。支持一行内多个"选择"动词（自动合并为 or 选择）。"""
+    """解析一行命令。支持:
+    1. 一行内多个"选择"动词（自动合并为 or 选择）
+    2. "然后/接着/再"连接的多步命令（逐段解析, 顺序执行）
+    """
+    # 先按"然后/接着/再"分割多步命令
+    step_parts = re.split(r"(?:然后|接着|随后|再然后)\s*", line)
+    if len(step_parts) >= 2:
+        all_cmds = []
+        for part in step_parts:
+            p = part.strip(" ，,；;。")
+            if not p:
+                continue
+            cmds = _parse_line_single(p)
+            if cmds is None:
+                return None  # 某步无法解析，整体放弃
+            all_cmds.extend(cmds)
+        return all_cmds if all_cmds else None
+    return _parse_line_single(line)
+
+
+def _parse_line_single(line):
+    """单步命令解析：多个"选择"动词合并为 or 选择。"""
     # 检测多个"选择/选中"动词
     verb_positions = [m.start() for m in re.finditer(r"选择|选中", line)]
     if len(verb_positions) >= 2:
@@ -505,6 +548,18 @@ def _register():
                             continue
                         # 无法识别 -> 原样传递
                         out.append(line)
+                # ---- 自动确保 sel 存在 ----
+                # 若命令依赖 sel 选择集（show/hide/color 等涉及 sel），
+                # 且 sel 尚未定义，则自动创建 select sel, all，避免
+                # "Invalid selection name sel" 错误
+                try:
+                    needs_sel = any(
+                        re.search(r"\bsel\b", c) for c in out
+                        if isinstance(c, str))
+                    if needs_sel and "sel" not in _self.get_names("selections"):
+                        out.insert(0, "select sel, all")
+                except Exception:
+                    pass
                 return _orig_do(out, log=log, echo=echo, flush=flush, _self=_self)
 
             cmd.do = _smart_do
