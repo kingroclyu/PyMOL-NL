@@ -1,2 +1,3 @@
 __pycache__/
 *.pyc
+.pymol_nl_key

@@ -24,6 +24,7 @@ PyMOL-NL: 自然语言驱动 PyMOL（中英文）
 """
 
 import re
+import os
 import sys
 
 # ============================================================
@@ -54,6 +55,58 @@ def _highlight(sel_cmd):
 @rule(r"(?:选择|选中|选)?\s*(?:氨基酸|残基)?\s*(\d+)\s*号?$", "选择残基: 选择74号 / 选择氨基酸74")
 def _sel_res(m):
     return _highlight(f"select sel, resi {m.group(1)}")
+
+
+@rule(r"(?:再?添加选择|追加选择|再加选择)\s*((?:[ABCabc]\s*链?\s*的?\s*\d+\s*号?)(?:\s*(?:和|与|、|,|，)\s*(?:[ABCabc]\s*链?\s*的?\s*\d+\s*号?|\d+\s*号?))+)", "添加选择(跨链, 追加): 添加选择b链的14，c链的10")
+def _sel_add_multi_chain(m):
+    text = m.group(1)
+    parts = re.split(r"\s*(?:和|与|、|,|，)\s*", text)
+    chains = {}
+    cur_chain = None
+    for p in parts:
+        mm = re.match(r"\s*([ABCabc])\s*链?\s*的?\s*(\d+)\s*号?\s*$", p)
+        if mm:
+            cur_chain = mm.group(1).upper()
+            chains.setdefault(cur_chain, []).append(mm.group(2))
+        else:
+            mm2 = re.match(r"\s*(\d+)\s*号?\s*$", p)
+            if mm2 and cur_chain:
+                chains.setdefault(cur_chain, []).append(mm2.group(1))
+    if not chains:
+        return None
+    terms = []
+    for ch in sorted(chains):
+        resis = sorted(set(chains[ch]), key=int)
+        if len(resis) == 1:
+            terms.append(f"chain {ch} and resi {resis[0]}")
+        else:
+            terms.append(f"chain {ch} and (resi {'+'.join(resis)})")
+    return [f"select sel, sel or ({' or '.join(terms)})"]
+
+
+@rule(r"添加选择\s*([ABCabc])\s*链?\s*((?:\d+\s*号?)(?:\s*(?:和|与|、|,|，|\s+)\s*\d+\s*号?)+)$", "添加选择(追加到现有选择): 添加选择a链175、179、182")
+def _sel_add_chain_multi(m):
+    ch = m.group(1).upper()
+    resis = [x for x in re.split(r"\s*(?:和|与|、|,|，|\s+)\s*", m.group(2)) if x.strip()]
+    resis = sorted(set(re.sub(r"号$", "", r) for r in resis), key=int)
+    return [f"select sel, sel or (chain {ch} and (resi {'+'.join(resis)}))"]
+
+
+@rule(r"添加选择\s*(?:氨基酸|残基)?\s*(\d+)\s*号?$", "添加选择单个残基: 添加选择201号")
+def _sel_add_res(m):
+    return [f"select sel, sel or (resi {m.group(1)})"]
+
+
+@rule(r"添加选择\s*([ABCabc])\s*链?\s*(\d+)\s*号?$", "添加选择指定链单残基: 添加选择a链201号")
+def _sel_add_chain_res(m):
+    return [f"select sel, sel or (chain {m.group(1).upper()} and resi {m.group(2)})"]
+
+
+@rule(r"添加选择\s*(?:氨基酸|残基)?\s*((?:\d+\s*号?)(?:\s*(?:和|与|、|,|，|\s+)\s*\d+\s*号?)+)$", "添加选择(无链, 所有链): 添加选择175、179、182")
+def _sel_add_res_multi(m):
+    resis = [x for x in re.split(r"\s*(?:和|与|、|,|，|\s+)\s*", m.group(1)) if x.strip()]
+    resis = sorted(set(re.sub(r"号$", "", r) for r in resis), key=int)
+    return [f"select sel, sel or (resi {'+'.join(resis)})"]
 
 
 @rule(r"(?:选择|选中|选)?\s*([ABCabc])\s*链?\s*((?:\d+\s*号?)(?:\s*(?:和|与|、|,|，|\s+)\s*\d+\s*号?)+)$", "选择同链多残基(任意数量): 选择A链11、14和15号")
@@ -260,7 +313,7 @@ def _parse_line(line):
         exprs = []
         others = []
         for seg in segments:
-            cmds = parse(seg)
+            cmds = parse_with_llm(seg)
             if cmds is None:
                 return None  # 某段无法解析，整体放弃（原样交给 PyMOL）
             if cmds and cmds[0].startswith("select sel, "):
@@ -269,7 +322,7 @@ def _parse_line(line):
                 others.extend(cmds)
         if exprs:
             return ["select sel, " + " or ".join(exprs)] + others
-    return parse(line)
+    return parse_with_llm(line)
 
 
 def parse(text):
@@ -281,6 +334,56 @@ def parse(text):
             cmds = func(m)
             return cmds
     return None
+
+
+_LLM_MODULE = None  # 懒加载缓存
+
+
+def _load_llm_module():
+    """加载 llm_translate 模块（绝对路径加载，兼容 PyMOL run/exec 模式）。"""
+    global _LLM_MODULE
+    if _LLM_MODULE is not None:
+        return _LLM_MODULE
+    import importlib.util
+    # 候选路径: 插件目录（run 时取脚本自身路径）+ 通用位置
+    candidates = []
+    try:
+        candidates.append(os.path.dirname(os.path.abspath(__file__)))
+    except NameError:
+        pass
+    candidates.append(os.path.expanduser("~/.pymol/startup"))
+    candidates.append(os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv else "")
+    for d in candidates:
+        p = os.path.join(d, "llm_translate.py")
+        if os.path.exists(p):
+            spec = importlib.util.spec_from_file_location("llm_translate", p)
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+            except Exception as e:
+                print(f"[PyMOL-NL] llm_translate 加载失败 {p}: {e}")
+                continue
+            _LLM_MODULE = mod
+            return mod
+    return None
+
+
+def parse_with_llm(text):
+    """规则匹配 + LLM 兜底：规则未命中时调用 DeepSeek 意图识别。
+    返回 PyMOL 命令列表；都无法理解返回 None。"""
+    # 1. 规则表
+    cmds = parse(text)
+    if cmds is not None:
+        return cmds
+    # 2. LLM 兜底（懒加载，避免无 key 时报错）
+    mod = _load_llm_module()
+    if mod is None:
+        return None
+    try:
+        return mod.llm_fallback(text)
+    except Exception as e:
+        print(f"[PyMOL-NL] LLM 兜底调用失败: {e}")
+        return None
 
 
 # ============================================================
@@ -312,7 +415,7 @@ def nl(*args, **kwargs):
     except ImportError:
         print("错误: 必须在 PyMOL 环境中运行")
         return
-    cmds = _parse_line(text)
+    cmds = parse_with_llm(text)
     if cmds is None:
         print(f"无法理解: '{text}'")
         print("输入 nl help 查看可用命令")

@@ -78,10 +78,43 @@ PyMOL 命令行:  nl 选择氨基酸74号
 
 ```
 PyMOL-NL/
-├── pymol_nl.py     # 插件主体（规则引擎 + PyMOL 集成，单文件）
-├── test_rules.py   # 规则引擎本地测试（26 用例，无需 PyMOL）
+├── pymol_nl.py       # 插件主体（规则引擎 + PyMOL 集成，单文件）
+├── llm_translate.py  # LLM 兜底（DeepSeek 意图识别 + 白名单执行器）
+├── test_rules.py     # 规则引擎本地测试（26 用例，无需 PyMOL）
 └── README.md
 ```
+
+## LLM 智能兜底（DeepSeek API，可选）
+
+规则表覆盖常用命令；**规则未命中时自动调用 DeepSeek 识别意图**，把没写过的说法也翻译成安全命令。
+
+**支持意图**（15 种）：select / add_selection / show / hide / color / distance / zoom / orient / align / create_object / split_chains / save_state / measure_angle / rotate / delete_object
+
+示例（规则表没有的说法）：
+```
+将sel复制另存为trem2      → create trem2, sel
+将b链和c链分别拆分出来    → create chainB, chain B; create chainC, chain C
+再添加选择b链的14，c链的10 → select sel, sel or (...)
+旋转90度                  → rotate y, 90, sel
+保存当前状态为state.pse   → save state.pse
+```
+
+**架构**（安全设计）：
+```
+规则表匹配（秒回）
+  → 未命中 → DeepSeek 意图识别（只输出 JSON，不生成命令）
+  → 本地白名单执行器（intent → 安全命令模板 + 参数校验）
+```
+
+- LLM 只负责"听懂意图"，**不能直接生成任意命令**——白名单挡住幻觉
+- 断网/无 key 时自动降级：规则表仍可用，LLM 只是增强
+
+**配置**：
+1. 安装时同时复制 `llm_translate.py` 到 startup 目录（与 `pymol_nl.py` 同目录）
+2. 配置 DeepSeek API key（三选一）：
+   - 环境变量 `DEEPSEEK_API_KEY`
+   - 或插件目录下 `.pymol_nl_key` 文件（一行，无换行）
+   - 或 WSL `~/.hermes/.env`（Windows 下 PyMOL 读不到，需用前两种）
 
 ## 扩展规则
 
@@ -99,10 +132,10 @@ def _rotate(m):
 
 - 需要 PyMOL 2.x（内置 Python 3），商业版/开源版均可
 - 中文输入依赖 PyMOL 内置 Python 的 UTF-8 支持（PyMOL 2.x 默认支持）
-- 无需任何第三方 Python 包（仅标准库 `re`）
+- 规则引擎零依赖（仅标准库 `re`）；LLM 兜底需 Python 3.6+（`urllib` 标准库）
 
 ## 待办 / 已知限制
 
 - [ ] 英文命令直接透传（如输入 `nl show sticks` 时原样执行）
-- [ ] LLM 版意图理解（DeepSeek API，输出 JSON 白名单执行）
 - [ ] 链名大小写 / 空格容错
+- [ ] LLM 响应缓存（相同指令避免重复调用 API）
