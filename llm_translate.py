@@ -100,7 +100,10 @@ intent 说明:
 - remove_chains: 从对象中移除指定链（保留其余链）-> params: {{"object": "prot", "chains": "B,C"}}
   如"删除prot中的b链和c链" -> {{"object": "prot", "chains": "B,C"}}
 - save_state: 保存状态文件 -> params: {{"filename": "state.pse"}}
-- measure_angle: 测量角度 -> params: {{"resi1": "74", "resi2": "150", "resi3": "160"}}
+- measure_angle: 测量角度（**必须三组原子**：angle 是 原子1-原子2-原子3 的夹角；只有两组原子/两个残基时无法成角，那种输入请返回 unknown 让用户改说三个）-> params: {{"selection1": "74", "selection2": "100", "selection3": "150", "atoms1": "CA", "atoms2": "CA", "atoms3": "CA"}}
+  如"量74号CA、100号CA和150号CA之间的角度" -> {{"intent": "measure_angle", "params": {{"selection1": "74", "selection2": "100", "selection3": "150"}}}}
+  如"量K186的NZ、D50的OD1和D50的OD2的角度" -> {{"intent": "measure_angle", "params": {{"selection1": "chain A and resi 186", "selection2": "chain B and resi 50", "selection3": "chain B and resi 50", "atoms1": "NZ", "atoms2": "OD1", "atoms3": "OD2"}}}}
+  如"量74和150的角度"（只有两组）-> {{"intent": "unknown", "params": {{}}}}
 - rotate: 旋转 -> params: {{"angle": "90", "axis": "y"}}
 - label: 加标签（用户给了文字就放进 text）-> params: {{"selection": "resi 74", "text": "可选"}}
 - label_clear: 去掉标签 -> params: {{"selection": "..."}}
@@ -369,12 +372,35 @@ def intent_to_cmds(intent, params):
         fname = _safe_name(p.get("filename", "state.pse"), "state.pse")
         return [f"save {fname}"]
     if intent == "measure_angle":
-        r1 = _safe_resi(str(p.get("resi1", "")))
-        r2 = _safe_resi(str(p.get("resi2", "")))
-        r3 = _safe_resi(str(p.get("resi3", "")))
-        if not (r1 and r2 and r3):
+        # 角度 = 三组原子的夹角。注意 PyMOL 的命令是 angle <名>, <原子1>, <原子2>, <原子3>；
+        # get_angle 是 Python API（第 4 个位置参数是 state），走命令行必然报 ValueError。
+        sel_raw = []
+        for i in (1, 2, 3):
+            sel_raw.append(str(p.get(f"selection{i}", p.get(f"sel{i}", p.get(f"resi{i}", "")))).strip())
+        if not all(sel_raw):
             return None
-        return [f"get_angle ang, resi {r1} and name CA, resi {r2} and name CA, resi {r3} and name CA"]
+        atoms = []
+        for i in (1, 2, 3):
+            a = _safe_atoms(p.get(f"atoms{i}", p.get(f"atom{i}", "")))
+            if a is None:
+                return None
+            atoms.append(a)
+
+        def _ang_sel(s, atom):
+            if re.fullmatch(r"\d+([+\-]\d+)*", s):
+                base = f"resi {s}"
+            elif re.fullmatch(r"[A-Za-z0-9\s()+\-_,]+", s):
+                base = s
+            else:
+                return None
+            return f"{base} and name {atom}"
+
+        s1 = _ang_sel(sel_raw[0], atoms[0])
+        s2 = _ang_sel(sel_raw[1], atoms[1])
+        s3 = _ang_sel(sel_raw[2], atoms[2])
+        if not (s1 and s2 and s3):
+            return None
+        return [f"angle ang, {s1}, {s2}, {s3}"]
     if intent == "rotate":
         angle = str(p.get("angle", "90")).strip()
         if not re.fullmatch(r"-?\d+(\.\d+)?", angle):

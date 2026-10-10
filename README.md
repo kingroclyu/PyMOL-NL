@@ -144,9 +144,8 @@ select / add_selection / show / show_only / hide / color / color_chains / spectr
 zoom / center / orient / align / super / create_object / split_chains / save_state / scene / rotate / delete_object /
 remove_chains / label / label_clear / png / bg_color / show_ss / set_value / measure_angle
 
-> **`measure_angle`（角度测量）当前不可用**：它要求三个残基，且发出的是 `get_angle`（那是 PyMOL 的 Python API，
-> 不是命令行命令，实测报 `ValueError: invalid literal for int() with base 10`）。要用角度，请直接在 PyMOL 里敲
-> `angle ang, sel1, sel2, sel3`（实测可用）。修复办法见文末「待办」。
+> **角度测量需要三组原子**：`量74号CA、100号CA和150号CA之间的角度` 会产出 `angle ang, ...`；
+> 只给两组原子无法成角，那种说法会提示「无法理解」（可改成量距离）。
 
 几个例子（规则表没有的说法，更多见 [GUIDE.md](GUIDE.md)）：
 
@@ -155,6 +154,7 @@ remove_chains / label / label_clear / png / bg_color / show_ss / set_value / mea
 把74号显示成棍状           → show sticks, resi 74
 隐藏所有水分子             → hide everything, resn HOH
 看看K186和D50有没有盐桥    → distance dist_186_50, resi 186 and name NZ, resi 50 and name OD1+OD2
+量74号CA、100号CA和150号CA之间的角度 → angle ang, resi 74 and name CA, resi 100 and name CA, resi 150 and name CA
 按b-factor上色             → spectrum b, rainbow, sel
 把A链和B链对齐             → align chain A, chain B
 保存场景F1                 → scene F1, store
@@ -211,6 +211,9 @@ def _rotate(m):
   顺带修好 `居中到74号` 被规则劫持、`保存图片到桌面` 的 `~` 未展开
 - **失败可诊断**：新增 `nl 诊断`，LLM 兜底失败时打印具体原因；超时 30s → 8s，并加同句缓存
 - 20 条真实科研口吻的基线语句命中率 14/20 → **20/20**，新增 16 条能力语句 **16/16**
+- **修好角度测量**：`measure_angle` 原来发出 `get_angle`（那是 Python API，第 4 个位置参数是 `state`，命令行必报
+  `ValueError: invalid literal for int()`）且要求三个残基；现在发出 PyMOL 命令 `angle ang, <原子1>, <原子2>, <原子3>`，
+  支持残基号或完整选区，并可用 `atoms1..3` 指定原子名（不给默认 CA）
 - 新增 [GUIDE.md](GUIDE.md)（效率篇使用指南）
 
 ## 待办 / 已知限制
@@ -220,6 +223,4 @@ def _rotate(m):
 - [ ] 同义词归一化（残基 / 氨基酸 / residue、棍状 / 棒状 / sticks、染色 / 上色 / 着色），减少 LLM 调用
 - [ ] LLM 兜底异步化：现在同步阻塞，最长 8 秒内界面无响应
 - [ ] 英文命令直接透传（如输入 `nl show sticks` 时原样执行）
-- [ ] 修好 `measure_angle`（角度测量）：把发出的 `get_angle` 改成 PyMOL 命令 `angle ang, <sel1>, <sel2>, <sel3>`，
-      并让短语支持三个残基（现在两个残基的说法一律返回「参数无法安全执行」）
 - [ ] 仓库尚无 LICENSE：公开复用前请先补许可协议
