@@ -27,6 +27,127 @@ import re
 import os
 import sys
 
+
+# ============================================================
+# 输出通道（2026-10-10）
+# 背景：PyMOL 的 C 反馈层会把非 ASCII 变成 "?"（GUI 输出区取的是
+# cmd._get_feedback() 的文本），中文提示因此全变问号。这里把文本直接写进
+# Qt 输出控件（PyMOLQtGUI.browser），绕开该层；拿不到界面时退回 print，
+# 并同时把 UTF-8 文本落到 ~/.pymol/pymol_nl.log。
+# ============================================================
+
+_BROWSER = None
+_LOG_FH = None
+_PENDING = []
+_FLUSH_ARMED = False
+_FLUSH_TRIES = 0
+_FLUSH_MAX_TRIES = 20
+
+
+def _out_browser():
+    """PyMOL Qt 输出控件（QPlainTextEdit）；无界面时返回 None。"""
+    global _BROWSER
+    if _BROWSER is not None:
+        return _BROWSER
+    try:
+        from pymol import gui
+        win = gui.get_qtwindow()
+        b = getattr(win, "browser", None) if win is not None else None
+    except Exception:
+        b = None
+    if b is not None:
+        _BROWSER = b
+    return b
+
+
+def _log_fh():
+    """中文回退日志（UTF-8）；打不开返回 None。"""
+    global _LOG_FH
+    if _LOG_FH is None:
+        try:
+            d = os.path.join(os.path.expanduser("~"), ".pymol")
+            if not os.path.isdir(d):
+                os.makedirs(d)
+            _LOG_FH = open(os.path.join(d, "pymol_nl.log"), "a", encoding="utf-8")
+        except Exception:
+            _LOG_FH = False
+    return _LOG_FH or None
+
+
+def _qt_app_running():
+    """Qt 应用已起（说明有图形界面，只是输出控件可能还没就绪）。"""
+    try:
+        from pymol.Qt import QtWidgets
+        return QtWidgets.QApplication.instance() is not None
+    except Exception:
+        return False
+
+
+def _flush_pending():
+    """把排队的中文补写进输出控件（界面晚于 .pymolrc 就绪时用）。"""
+    global _FLUSH_ARMED, _FLUSH_TRIES
+    _FLUSH_ARMED = False
+    if not _PENDING:
+        return
+    b = _out_browser()
+    if b is None:
+        if _FLUSH_TRIES < _FLUSH_MAX_TRIES:
+            _arm_flush()
+        return
+    for t in _PENDING:
+        try:
+            b.appendPlainText(t)
+        except Exception:
+            pass
+    del _PENDING[:]
+    _FLUSH_TRIES = 0
+
+
+def _arm_flush():
+    global _FLUSH_ARMED, _FLUSH_TRIES
+    if _FLUSH_ARMED or _FLUSH_TRIES >= _FLUSH_MAX_TRIES:
+        return
+    _FLUSH_ARMED = True
+    _FLUSH_TRIES += 1
+    try:
+        from pymol.Qt import QtCore
+        QtCore.QTimer.singleShot(1200, _flush_pending)
+    except Exception:
+        pass
+
+
+_LAST_REASON = ""  # 最近一次“没听懂”的具体原因（给 nl 显示）
+
+
+def _say(text):
+    """输出一行给用户：优先 Qt 控件（中文正常显示），否则日志 + print。"""
+    text = "" if text is None else str(text)
+    b = _out_browser()
+    if b is not None:
+        try:
+            b.appendPlainText(text)
+            return
+        except Exception:
+            pass
+    fh = _log_fh()
+    if fh is not None:
+        try:
+            fh.write(text + "\n")
+            fh.flush()
+        except Exception:
+            pass
+    if _qt_app_running():
+        _PENDING.append(text)
+        if len(_PENDING) > 200:
+            del _PENDING[0]
+        _arm_flush()
+        return
+    try:
+        print(text)
+    except Exception:
+        pass
+
+
 # ============================================================
 # 规则引擎
 # ============================================================
@@ -255,7 +376,7 @@ def _zoom_res(m):
     return [f"zoom resi {m.group(1)}"]
 
 
-@rule(r"放大|缩放|zoom|居中", "缩放到当前选择")
+@rule(r"^(?:放大|缩小|缩放|zoom|居中)\s*(?:一下|一点|些许|显示|视图|视角|当前选择)?\s*[。！!]?$", "缩放到当前选择")
 def _zoom(m):
     return ["zoom sel"]
 
@@ -345,13 +466,13 @@ def _save(m):
 
 @rule(r"^(?:help|帮助|说明)$", "显示帮助")
 def _help(m):
-    print(_CMD_HELP)
+    _say(_CMD_HELP)
     return []
 
 
 @rule(r"^(?:list|列表|规则|rules?)$", "显示所有规则")
 def _list(m):
-    print("\n".join(f"  {d}" for _, _, d in RULES))
+    _say("\n".join(f"  {d}" for _, _, d in RULES))
     return []
 
 
@@ -373,6 +494,7 @@ def _parse_line(line):
     """解析一行命令。支持:
     1. 一行内多个"选择"动词（自动合并为 or 选择）
     2. "然后/接着/再"连接的多步命令（逐段解析, 顺序执行）
+    3. 无连接词的多动作连写（选择...显示...渲染...）
     """
     # 先按"然后/接着/再"分割多步命令
     step_parts = re.split(r"(?:然后|接着|随后|再然后)\s*", line)
@@ -390,8 +512,54 @@ def _parse_line(line):
     return _parse_line_single(line)
 
 
+# 动作动词表（用于无连接词的多动作连写分割）
+_ACTION_VERBS = [
+    "选择", "选中", "添加选择", "追加选择", "显示", "隐藏", "只显示",
+    "染成", "标成", "渲染成", "改成", "量", "测", "放大", "旋转",
+    "保存", "删除", "拆分", "提取", "复制", "对齐", "清空", "全选",
+]
+
+
+def _split_multi_action(line):
+    """按动作动词位置分割多动作连写，如 '选择...显示...渲染...'。
+    返回段列表；若只有 1 个动作返回 None（不分割）。"""
+    # 找所有动作动词的出现位置（跳过开头的第一个）
+    positions = []
+    for verb in _ACTION_VERBS:
+        for m in re.finditer(re.escape(verb), line):
+            positions.append((m.start(), verb))
+    if not positions:
+        return None
+    positions.sort()
+    # 合并重叠动词（取最靠前的），只保留每个位置的第一个动词
+    merged = []
+    for pos, verb in positions:
+        if merged and pos < merged[-1][0] + 3:
+            continue
+        merged.append((pos, verb))
+    if len(merged) <= 1:
+        return None
+    segments = []
+    for i, (pos, verb) in enumerate(merged):
+        end = merged[i + 1][0] if i + 1 < len(merged) else len(line)
+        seg = line[pos:end].strip(" ，,；;。")
+        if seg:
+            segments.append(seg)
+    return segments if len(segments) >= 2 else None
+
+
 def _parse_line_single(line):
-    """单步命令解析：多个"选择"动词合并为 or 选择。"""
+    """单步命令解析：多个"选择"动词合并为 or 选择；多动作连写逐段执行。"""
+    # 无连接词的多动作连写（选择...显示...渲染...）
+    multi = _split_multi_action(line)
+    if multi is not None:
+        all_cmds = []
+        for seg in multi:
+            cmds = parse_with_llm(seg)
+            if cmds is None:
+                return None  # 某段无法解析，整体放弃
+            all_cmds.extend(cmds)
+        return all_cmds if all_cmds else None
     # 检测多个"选择/选中"动词
     verb_positions = [m.start() for m in re.finditer(r"选择|选中", line)]
     if len(verb_positions) >= 2:
@@ -450,7 +618,7 @@ def _load_llm_module():
             try:
                 spec.loader.exec_module(mod)
             except Exception as e:
-                print(f"[PyMOL-NL] llm_translate 加载失败 {p}: {e}")
+                _say(f"[PyMOL-NL] llm_translate 加载失败 {p}: {e}")
                 continue
             _LLM_MODULE = mod
             return mod
@@ -459,7 +627,9 @@ def _load_llm_module():
 
 def parse_with_llm(text):
     """规则匹配 + LLM 兜底：规则未命中时调用 DeepSeek 意图识别。
-    返回 PyMOL 命令列表；都无法理解返回 None。"""
+    返回 PyMOL 命令列表；都无法理解返回 None（原因见 _LAST_REASON）。"""
+    global _LAST_REASON
+    _LAST_REASON = ""
     # 1. 规则表
     cmds = parse(text)
     if cmds is not None:
@@ -467,12 +637,28 @@ def parse_with_llm(text):
     # 2. LLM 兜底（懒加载，避免无 key 时报错）
     mod = _load_llm_module()
     if mod is None:
+        _LAST_REASON = "找不到 llm_translate.py（LLM 兜底不可用）"
         return None
     try:
-        return mod.llm_fallback(text)
+        cmds = mod.llm_fallback(text)
     except Exception as e:
-        print(f"[PyMOL-NL] LLM 兜底调用失败: {e}")
+        _LAST_REASON = f"LLM 兜底调用异常: {type(e).__name__}: {e}"
         return None
+    if cmds is None:
+        st = mod.get_status() if hasattr(mod, "get_status") else {}
+        kind = st.get("kind", "init")
+        detail = st.get("detail", "")
+        if kind == "unknown":
+            _LAST_REASON = "本地规则未命中，LLM 也不确定（换种说法，或看 nl help）"
+        elif kind == "no_key":
+            _LAST_REASON = f"本地规则未命中，且 LLM 不可用：{detail}"
+        elif kind == "unsafe":
+            _LAST_REASON = f"LLM 识别出意图但参数不安全，已放弃：{detail}"
+        elif kind == "error":
+            _LAST_REASON = f"本地规则未命中，LLM 调用失败：{detail}"
+        else:
+            _LAST_REASON = "本地规则未命中，LLM 无结果"
+    return cmds
 
 
 # ============================================================
@@ -487,9 +673,47 @@ PyMOL-NL 自然语言命令（nl <命令>）
 着色:   染成红色 | 把74号染成红色
 测距:   量74和150的距离 | 量A链74和B链150的距离 | 清除距离
 视角:   放大 | 放大74号 | 重置视角
-对齐:   对齐b到a | 以a为基准对齐b
-帮助:   help | list
+对齐:   对齐b到a | 以a为基准对齐b | 叠合b到a
+结构:   显示A链的卡通 | 只显示A链 | 隐藏所有水分子 | 加标签 | 截图 | 按b-factor上色
+分色:   把两条链分别上色 | A链红色B链绿色
+测距:   看看K186和D50有没有盐桥（最近会把原子名一起解析）
+其它:   保存场景 | 恢复场景 | 居中 | 显示二级结构 | 设置卡通透明
+帮助:   help | list | 诊断
 """
+
+
+def _diagnose():
+    """nl 诊断: 规则条数 / LLM 可用性 / 往返耗时 / 输出通道"""
+    import time
+    _say("---- PyMOL-NL 自检 ----")
+    _say(f"  本地规则: {len(RULES)} 条")
+    mod = _load_llm_module()
+    if mod is None:
+        _say("  LLM 模块: 未找到 llm_translate.py（只走本地规则）")
+        return
+    try:
+        key = mod._get_api_key()
+    except Exception as e:
+        _say(f"  LLM 模块: 异常 {type(e).__name__}: {e}")
+        return
+    _say(f"  API key: {'已配置' if key else '未配置（环境变量 DEEPSEEK_API_KEY 或插件目录 .pymol_nl_key）'}")
+    if not key:
+        return
+    t0 = time.time()
+    try:
+        r = mod.llm_translate("把74号显示成棍状", timeout=8)
+    except Exception as e:
+        _say(f"  LLM 调用: 异常 {type(e).__name__}: {e}")
+        return
+    dt = time.time() - t0
+    st = mod.get_status()
+    if r is None:
+        _say(f"  LLM 调用: 失败（{dt:.1f}s）原因: {st.get('detail', '未知')}")
+    else:
+        _say(f"  LLM 调用: 正常（{dt:.1f}s）识别为 {r[0]} {r[1]}")
+    b = _out_browser()
+    where = "Qt 输出控件直写" if b is not None else ("日志文件 ~/.pymol/pymol_nl.log" if _log_fh() else "print 回退")
+    _say(f"  中文输出通道: {where}")
 
 
 def nl(*args, **kwargs):
@@ -502,15 +726,20 @@ def nl(*args, **kwargs):
         import pymol
         from pymol import cmd
     except ImportError:
-        print("错误: 必须在 PyMOL 环境中运行")
+        _say("错误: 必须在 PyMOL 环境中运行")
+        return
+    if text.strip().lower() in ("诊断", "自检", "diagnose", "diag", "check"):
+        _diagnose()
         return
     cmds = parse_with_llm(text)
     if cmds is None:
-        print(f"无法理解: '{text}'")
-        print("输入 nl help 查看可用命令")
+        _say(f"无法理解: '{text}'")
+        if _LAST_REASON:
+            _say(f"  原因: {_LAST_REASON}")
+        _say("输入 nl help 查看可用命令")
         return
     for c in cmds:
-        print(f">>> {c}")
+        _say(f">>> {c}")
         cmd.do(c)
 
 
@@ -540,6 +769,13 @@ def _register():
                         if line.strip().lower().startswith("nl "):
                             out.append(line)
                             continue
+                        # ⚠️ 合法 PyMOL 命令原样传递（2026-08-17 修复：免前缀模式
+                        # 劫持 show cartoon/zoom 等正常命令 → 改写为 show X, sel +
+                        # 自动 select sel, all，导致全选+渲染异常）
+                        first = line.strip().split()[0].lower()
+                        if first in _cmdmod.keyword:
+                            out.append(line)
+                            continue
                         # 尝试自然语言解析
                         parsed = _parse_line(line.strip())
                         if parsed is not None:
@@ -563,11 +799,11 @@ def _register():
                 return _orig_do(out, log=log, echo=echo, flush=flush, _self=_self)
 
             cmd.do = _smart_do
-            print("PyMOL-NL 已加载（免前缀模式已启用）。输入 `nl help` 或直接输入自然语言。")
+            _say("PyMOL-NL 已加载（免前缀模式已启用）。输入 `nl help` 或直接输入自然语言。")
         except Exception as e:
-            print(f"PyMOL-NL 已加载（免前缀模式启用失败: {e}，请使用 `nl` 前缀）。")
+            _say(f"PyMOL-NL 已加载（免前缀模式启用失败: {e}，请使用 `nl` 前缀）。")
     except Exception as e:
-        print(f"PyMOL-NL 注册失败: {e}")
+        _say(f"PyMOL-NL 注册失败: {e}")
 
 
 _register()
